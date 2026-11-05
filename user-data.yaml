@@ -1,0 +1,26 @@
+Fn::Base64: |
+  #!/bin/bash -xe
+  # No -x: it would write the generated password to cloud-init logs.
+  set -euo pipefail
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y
+  apt-get install -y docker.io
+  systemctl enable --now docker
+
+  docker volume create pufferpanel-config
+
+  docker volume create pufferpanel-servers
+
+  docker create --name pufferpanel \
+    -p 8080:8080 -p 5657:5657 \
+    -v pufferpanel-config:/etc/pufferpanel \
+    -v pufferpanel-servers:/var/lib/pufferpanel:z \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    --restart=on-failure \
+    pufferpanel/pufferpanel:latest
+
+  docker image ls
+
+  docker container ls -a
+
+  docker start pufferpanel

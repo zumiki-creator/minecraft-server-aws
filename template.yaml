@@ -6,6 +6,7 @@ Parameters:
   AwsRegion:
     Type: String
     Description: AWS region to deploy into. Must match the region the stack is deployed to (--region)
+    Default: us-east-1
   MyIpCidr:
     Type: String
     Description: Your public IP in CIDR form. Only this address can reach the server (e.g. 203.0.113.10/32)
@@ -257,6 +258,51 @@ Resources:
         Input: !Sub '{"InstanceIds": ["${ServerInstanceAmd}"]}'
 
       #####################################
+
+  # 5. AWS Backup: full daily backup (AMI + EBS snapshots) of the instance at midnight Miami time
+  BackupVault:
+    Type: 'AWS::Backup::BackupVault'
+    Properties:
+      BackupVaultName: minecraft-pufferpanel-vault
+
+  BackupServiceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: backup.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForRestores'
+
+  DailyBackupPlan:
+    Type: 'AWS::Backup::BackupPlan'
+    Properties:
+      BackupPlan:
+        BackupPlanName: minecraft-pufferpanel-daily
+        BackupPlanRule:
+          - RuleName: daily-midnight-miami
+            TargetBackupVault: !Ref BackupVault
+            ScheduleExpression: 'cron(0 0 * * ? *)' # Midnight every day
+            ScheduleExpressionTimezone: 'America/New_York' # Miami, FL is on Eastern time
+            StartWindowMinutes: 60
+            CompletionWindowMinutes: 180
+            Lifecycle:
+              DeleteAfterDays: 3 # Keeps roughly the last 3 daily backups; older ones are deleted
+
+  DailyBackupSelection:
+    Type: 'AWS::Backup::BackupSelection'
+    Properties:
+      BackupPlanId: !Ref DailyBackupPlan
+      BackupSelection:
+        SelectionName: minecraft-pufferpanel-instance
+        IamRoleArn: !GetAtt BackupServiceRole.Arn
+        Resources:
+          - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${ServerInstanceAmd}'
 
 Outputs:
   PublicIp:

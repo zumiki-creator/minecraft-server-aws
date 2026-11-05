@@ -187,6 +187,9 @@ Resources:
 
   ServerInstanceAmd:
     Type: AWS::EC2::Instance
+    DependsOn:
+      - PufferPanelServersMountTarget
+      - PufferPanelConfigMountTarget
     Properties:
       SubnetId: !Ref PublicSubnet
       LaunchTemplate:
@@ -303,6 +306,58 @@ Resources:
         IamRoleArn: !GetAtt BackupServiceRole.Arn
         Resources:
           - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${ServerInstanceAmd}'
+
+  # 6. EFS file system for PufferPanel server data, mounted from the same subnet as the instance
+  EfsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: NFS access to the pufferpanel-servers EFS from the server only
+      VpcId: !Ref ServerVpc
+      SecurityGroupIngress:
+        - Description: NFS from the Minecraft/PufferPanel server
+          IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref ServerSecurityGroup
+      Tags:
+        - Key: Name
+          Value: minecraft-pufferpanel-efs
+
+  PufferPanelServersFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      ThroughputMode: elastic
+      FileSystemTags:
+        - Key: Name
+          Value: pufferpanel-servers
+
+  PufferPanelServersMountTarget:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref PufferPanelServersFileSystem
+      SubnetId: !Ref PublicSubnet
+      SecurityGroups:
+        - !GetAtt EfsSecurityGroup.GroupId
+
+  PufferPanelConfigFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      ThroughputMode: elastic
+      FileSystemTags:
+        - Key: Name
+          Value: pufferpanel-config
+
+  PufferPanelConfigMountTarget:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref PufferPanelConfigFileSystem
+      SubnetId: !Ref PublicSubnet
+      SecurityGroups:
+        - !GetAtt EfsSecurityGroup.GroupId
 
 Outputs:
   PublicIp:

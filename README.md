@@ -94,6 +94,8 @@ SSM also works: `aws ssm start-session --target <instance-id> --profile minecraf
 - Creates its own VPC; it does not use the default VPC.
 
 # Deployment Command
+sam validate --lint --profile minecraft --region us-east-1 2>&1 | tail -5
+sam build
 sam deploy \
 --profile minecraft \
 --stack-name pufferpanel-on-ec2-docker \

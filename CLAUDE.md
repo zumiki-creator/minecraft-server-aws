@@ -21,7 +21,7 @@ sam validate --lint
 # Deploy (profile minecraft, us-east-1)
 sam deploy --profile minecraft --stack-name pufferpanel-on-ec2-docker --region us-east-1 \
   --resolve-s3 --capabilities CAPABILITY_IAM \
-  --parameter-overrides MyIpCidr=<your-public-ip>/32
+  --parameter-overrides MyIpCidr=<your-public-ip>/32 MinecraftUsersCidr=<players-cidr>
 
 # Connect to the instance
 ssh -i keypair ubuntu@<public-ip>
@@ -38,9 +38,8 @@ Debugging on the instance: `/var/log/cloud-init-output.log` (bootstrap progress)
 
 - **Network**: a dedicated VPC (`192.168.160.0/24`) with one public subnet, an internet gateway, and
   a default route. The README says it uses the default VPC; the template does not. Trust the template.
-- **Security group** (`ServerSecurityGroup`): Minecraft Bedrock UDP/TCP on 19132 and 19133 and PufferPanel
-  SFTP on 5657 are open to `0.0.0.0/0`. SSH (22) and the PufferPanel web UI (8080) are restricted to the
-  `MyIpCidr` parameter. ICMP echo is open.
+- **Security group** (`ServerSecurityGroup`): Minecraft ports (Bedrock 19132, Java 25565; UDP/TCP) are restricted to
+  `MinecraftUsersCidr`. SSH (22), PufferPanel web UI (8080), SFTP (5657) and ICMP echo are restricted to `MyIpCidr`.
 - **Compute**: `ServerLaunchTemplate` holds the instance config (AMI from an SSM parameter, encrypted 20 GB
   gp3 root volume, IAM instance profile with `AmazonSSMManagedInstanceCore`, key pair, user data).
   `ServerInstanceAmd` is launched from the template's `LatestVersionNumber`, so a template change creates a new version.
@@ -59,7 +58,7 @@ Debugging on the instance: `/var/log/cloud-init-output.log` (bootstrap progress)
   renaming the instance resource, because CloudFormation cannot change the type in place.
 - `AWS::SSM::Parameter::Value` for the AMI pins Ubuntu 26.04 by default. The README says 24.04. Check which
   one the user wants before changing it.
-- `MyIpCidr` has no default. Every deploy must pass `--parameter-overrides MyIpCidr=<ip>/32`, or SAM will prompt for it.
+- `MyIpCidr` and `MinecraftUsersCidr` have no defaults. Every deploy must pass both in `--parameter-overrides`, or SAM will prompt for them.
 
 ## Secrets
 

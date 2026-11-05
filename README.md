@@ -15,10 +15,13 @@ Resources:
 - `StopEC2Schedule` / `StartEC2Schedule` (`AWS::Scheduler::Schedule`): stop and start the instance daily
   through `SchedulerExecutionRole`.
 
-Security group: every ingress rule (19132 and 19133 UDP + TCP, 5657, 22, 8080, ICMP echo) is restricted
-to the `MyIpCidr` parameter.
+Security group:
+- Minecraft ports (19132 Bedrock, 25565 Java; UDP + TCP) are restricted to the `MinecraftUsersCidr` parameter.
+- SSH (22), PufferPanel (8080), SFTP (5657) and ICMP echo are restricted to the `MyIpCidr` parameter.
 
-`MyIpCidr` has no default. Pass your public IP in CIDR form at deploy time (e.g. `203.0.113.10/32`).
+Both parameters have no default. Pass them at deploy time:
+- `MyIpCidr`: your public IP in CIDR form (e.g. `203.0.113.10/32`).
+- `MinecraftUsersCidr`: the CIDR of players allowed to join (e.g. `0.0.0.0/0` for anyone).
 
 ## Deployment
 
@@ -39,7 +42,7 @@ chmod 400 minecraft-keypair.pem
 sam validate --lint
 sam deploy --profile minecraft --stack-name pufferpanel-on-ec2-docker --region us-east-1 \
   --resolve-s3 --capabilities CAPABILITY_IAM \
-  --parameter-overrides MyIpCidr=<your-public-ip>/32
+  --parameter-overrides MyIpCidr=<your-public-ip>/32 MinecraftUsersCidr=<players-cidr>/32
 ```
 
 Get the public address from the stack's `PublicIp` output. It stays the same unless the stack is deleted and recreated.
@@ -91,7 +94,12 @@ SSM also works: `aws ssm start-session --target <instance-id> --profile minecraf
 - Creates its own VPC; it does not use the default VPC.
 
 # Deployment Command
-sam deploy --profile minecraft --stack-name pufferpanel-on-ec2-docker --region us-east-1 --resolve-s3 --capabilities CAPABILITY_IAM --no-confirm-changeset --parameter-overrides MyIpCidr=<your ip> AwsRegion=us-east-1
+sam deploy \
+--profile minecraft \
+--stack-name pufferpanel-on-ec2-docker \
+--region us-east-1 \
+--resolve-s3 --capabilities CAPABILITY_IAM \
+--parameter-overrides MyIpCidr=<yourIP> MinecraftUsersCidr=<ip> or 0.0.0.0/0
 
 #ssh to ec2:
 chmod 400 "minecraft-keypair.pem"

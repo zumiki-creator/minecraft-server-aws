@@ -452,7 +452,7 @@ Resources:
       ThroughputMode: elastic
       FileSystemTags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-servers"
+          Value: !Sub "${AWS::StackName}-pufferpanel-servers"
 
   PufferPanelServersMountTarget:
     Type: AWS::EFS::MountTarget
@@ -470,7 +470,7 @@ Resources:
       ThroughputMode: elastic
       FileSystemTags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-config"
+          Value: !Sub "${AWS::StackName}-pufferpanel-config"
 
   PufferPanelConfigMountTarget:
     Type: AWS::EFS::MountTarget

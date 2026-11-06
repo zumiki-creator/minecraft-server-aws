@@ -1,0 +1,466 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Minecraft server host - Ubuntu on t3a.medium (AMD) running PufferPanel in Docker. Standalone template (no SAM transform, no external user-data file).
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Network access
+        Parameters:
+          - AwsRegion
+          - MyIpCidr
+          - MinecraftUsersCidr
+      - Label:
+          default: Server instance
+        Parameters:
+          - UbuntuAmiId
+          - KeyName
+      - Label:
+          default: PufferPanel admin account
+        Parameters:
+          - AdminName
+          - AdminEmail
+          - AdminPassword
+    ParameterLabels:
+      AwsRegion:
+        default: AWS region
+      MyIpCidr:
+        default: Your IP address (CIDR)
+      MinecraftUsersCidr:
+        default: Players' IP range (CIDR)
+      UbuntuAmiId:
+        default: Ubuntu AMI (SSM parameter)
+      KeyName:
+        default: SSH key pair name
+      AdminName:
+        default: Admin username
+      AdminEmail:
+        default: Admin email
+      AdminPassword:
+        default: Admin password
+
+Parameters:
+  AwsRegion:
+    Type: String
+    Description: AWS region to deploy into. Must match the region the stack is deployed to (--region)
+    Default: us-east-1
+  MyIpCidr:
+    Type: String
+    Description: Your public IP in CIDR form. Only this address can reach the server (e.g. 203.0.113.10/32)
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+  MinecraftUsersCidr:
+    Type: String
+    Description: CIDR allowed to connect to the Minecraft game ports (Bedrock 19132, Java 25565). Use 0.0.0.0/0 for anyone (e.g. 203.0.113.0/24)
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+  UbuntuAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Description: SSM parameter resolving to the Ubuntu amd64 AMI (change the version to use a newer release)
+    Default: /aws/service/canonical/ubuntu/server/26.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+  KeyName:
+    Type: String
+    Description: EC2 key pair name (leave empty to use SSM Session Manager only)
+    Default: minecraft-keypair
+  AdminName:
+    Type: String
+    Description: Username of the first PufferPanel admin user
+    AllowedPattern: '^[A-Za-z0-9_-]{3,32}$'
+    ConstraintDescription: '3-32 characters: letters, digits, underscore or hyphen'
+  AdminEmail:
+    Type: String
+    Description: Email address of the first PufferPanel admin user
+    AllowedPattern: '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
+    ConstraintDescription: Must be a valid email address
+  AdminPassword:
+    Type: String
+    NoEcho: true
+    Description: Password of the first PufferPanel admin user (8-64 characters, no spaces or quotes or $ ` \)
+    MinLength: 8
+    MaxLength: 64
+    AllowedPattern: '^[A-Za-z0-9!@#%^&*_+=.,:;?-]{8,64}$'
+    ConstraintDescription: 8-64 characters; letters, digits and !@#%^&*_+=.,:;?- only
+
+Rules:
+  RegionMatchesStackRegion:
+    Assertions:
+      - Assert: !Equals [!Ref AwsRegion, !Ref 'AWS::Region']
+        AssertDescription: AwsRegion must match the region the stack is deployed to
+
+Conditions:
+  HasKeyName: !Not [!Equals [!Ref KeyName, '']]
+
+Resources:
+  # ---------- Network ----------
+  ServerVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 192.168.160.0/24
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-vpc"
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-igw"
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref ServerVpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref ServerVpc
+      CidrBlock: 192.168.160.0/25
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-public"
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref ServerVpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-public"
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # ---------- Security ----------
+  ServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Minecraft + PufferPanel
+      VpcId: !Ref ServerVpc
+      SecurityGroupIngress:
+        - Description: Minecraft Bedrock (UDP)
+          IpProtocol: udp
+          FromPort: 19132
+          ToPort: 19132
+          CidrIp: !Ref MinecraftUsersCidr
+        - Description: Minecraft Bedrock (TCP)
+          IpProtocol: tcp
+          FromPort: 19132
+          ToPort: 19132
+          CidrIp: !Ref MinecraftUsersCidr
+        - Description: Minecraft Java (UDP)
+          IpProtocol: udp
+          FromPort: 25565
+          ToPort: 25565
+          CidrIp: !Ref MinecraftUsersCidr
+        - Description: Minecraft Java (TCP)
+          IpProtocol: tcp
+          FromPort: 25565
+          ToPort: 25565
+          CidrIp: !Ref MinecraftUsersCidr
+        - Description: PufferPanel SFTP
+          IpProtocol: tcp
+          FromPort: 5657
+          ToPort: 5657
+          CidrIp: !Ref MyIpCidr
+        - Description: SSH from my IP only
+          IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref MyIpCidr
+        - Description: PufferPanel web UI from my IP only
+          IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: !Ref MyIpCidr
+        - Description: ICMP echo (ping) from my IP only
+          IpProtocol: icmp
+          FromPort: 8
+          ToPort: -1
+          CidrIp: !Ref MyIpCidr
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref InstanceRole
+
+  # ---------- Compute ----------
+  ServerLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        InstanceType: t3a.medium
+        ImageId: !Ref UbuntuAmiId
+        KeyName: !If [HasKeyName, !Ref KeyName, !Ref 'AWS::NoValue']
+        IamInstanceProfile:
+          Arn: !GetAtt InstanceProfile.Arn
+        SecurityGroupIds:
+          - !GetAtt ServerSecurityGroup.GroupId
+        BlockDeviceMappings:
+          - DeviceName: /dev/sda1
+            Ebs:
+              VolumeSize: 20
+              VolumeType: gp3
+              DeleteOnTermination: true
+              Encrypted: true
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub "${AWS::StackName}-docker"
+        UserData:
+          Fn::Base64:
+            Fn::Sub: |
+              #!/bin/bash -xe
+              # No -x: it would write the generated password to cloud-init logs.
+              set -euo pipefail
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -y
+              apt-get install -y docker.io nfs-common
+              systemctl enable --now docker
+
+              # Mount the pufferpanel-servers EFS file system (server data survives instance replacement)
+              mkdir -p /mnt/pufferpanel-servers
+              grep -q ' /mnt/pufferpanel-servers ' /etc/fstab || \
+                echo '${PufferPanelServersFileSystem}.efs.${AWS::Region}.amazonaws.com:/ /mnt/pufferpanel-servers nfs4 nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport,_netdev 0 0' >> /etc/fstab
+              # The mount target can take a moment to become reachable after the stack is created
+              for i in $(seq 1 60); do
+                mount /mnt/pufferpanel-servers && break
+                sleep 10
+              done
+              mountpoint -q /mnt/pufferpanel-servers
+
+              # Mount the pufferpanel-config EFS file system (PufferPanel config survives instance replacement)
+              mkdir -p /mnt/pufferpanel-config
+              grep -q ' /mnt/pufferpanel-config ' /etc/fstab || \
+                echo '${PufferPanelConfigFileSystem}.efs.${AWS::Region}.amazonaws.com:/ /mnt/pufferpanel-config nfs4 nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport,_netdev 0 0' >> /etc/fstab
+              for i in $(seq 1 60); do
+                mount /mnt/pufferpanel-config && break
+                sleep 10
+              done
+              mountpoint -q /mnt/pufferpanel-config
+
+              docker create --name pufferpanel \
+                -p 8080:8080 -p 5657:5657 \
+                -v /mnt/pufferpanel-config:/etc/pufferpanel \
+                -v /mnt/pufferpanel-servers:/var/lib/pufferpanel:z \
+                -v /var/run/docker.sock:/var/run/docker.sock \
+                --restart=on-failure \
+                pufferpanel/pufferpanel:latest
+
+              docker image ls
+
+              docker container ls -a
+
+              docker start pufferpanel
+
+              sleep 5
+
+              docker exec -i pufferpanel /pufferpanel/bin/pufferpanel user add --name "${AdminName}" --email "${AdminEmail}" --password "${AdminPassword}" --admin
+
+  ServerInstanceAmd:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - PufferPanelServersMountTarget
+      - PufferPanelConfigMountTarget
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      LaunchTemplate:
+        LaunchTemplateId: !Ref ServerLaunchTemplate
+        Version: !GetAtt ServerLaunchTemplate.LatestVersionNumber
+
+  ServerEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref ServerInstanceAmd
+
+  # ---------- Scheduler (start/stop instance daily) ----------
+  SchedulerExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: EventBridgeStartStopEC2Policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ec2:StartInstances'
+                  - 'ec2:StopInstances'
+                Resource: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${ServerInstanceAmd}'
+
+  # Stops the EC2 instance daily at 00:00 UTC
+  StopEC2Schedule:
+    Type: 'AWS::Scheduler::Schedule'
+    Properties:
+      Name: !Sub "${AWS::StackName}-StopEC2"
+      Description: 'Stops the EC2 instance daily at midnight UTC.'
+      FlexibleTimeWindow:
+        Mode: 'OFF'
+      ScheduleExpression: 'cron(0 0 * * ? *)'
+      ScheduleExpressionTimezone: 'UTC'
+      State: DISABLED
+      Target:
+        Arn: !Sub 'arn:${AWS::Partition}:scheduler:::aws-sdk:ec2:stopInstances'
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: !Sub '{"InstanceIds": ["${ServerInstanceAmd}"]}'
+
+  # Starts the EC2 instance daily at 08:00 UTC
+  StartEC2Schedule:
+    Type: 'AWS::Scheduler::Schedule'
+    Properties:
+      Name: !Sub "${AWS::StackName}-StartEC2"
+      Description: 'Starts the EC2 instance daily at 8:00 AM UTC.'
+      FlexibleTimeWindow:
+        Mode: 'OFF'
+      ScheduleExpression: 'cron(0 8 * * ? *)'
+      ScheduleExpressionTimezone: 'UTC'
+      State: DISABLED
+      Target:
+        Arn: !Sub 'arn:${AWS::Partition}:scheduler:::aws-sdk:ec2:startInstances'
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: !Sub '{"InstanceIds": ["${ServerInstanceAmd}"]}'
+
+  # ---------- AWS Backup (daily, 3-day retention) ----------
+  BackupVault:
+    Type: 'AWS::Backup::BackupVault'
+    Properties:
+      BackupVaultName: !Sub "${AWS::StackName}-vault"
+
+  BackupServiceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: backup.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForRestores'
+
+  DailyBackupPlan:
+    Type: 'AWS::Backup::BackupPlan'
+    Properties:
+      BackupPlan:
+        BackupPlanName: !Sub "${AWS::StackName}-daily"
+        BackupPlanRule:
+          - RuleName: daily-midnight-miami
+            TargetBackupVault: !Ref BackupVault
+            ScheduleExpression: 'cron(0 0 * * ? *)'
+            ScheduleExpressionTimezone: 'America/New_York'
+            StartWindowMinutes: 60
+            CompletionWindowMinutes: 180
+            Lifecycle:
+              DeleteAfterDays: 3
+
+  DailyBackupSelection:
+    Type: 'AWS::Backup::BackupSelection'
+    Properties:
+      BackupPlanId: !Ref DailyBackupPlan
+      BackupSelection:
+        SelectionName: !Sub "${AWS::StackName}-instance"
+        IamRoleArn: !GetAtt BackupServiceRole.Arn
+        Resources:
+          - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${ServerInstanceAmd}'
+
+  # ---------- EFS (server data and config) ----------
+  EfsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: NFS access to the EFS file systems from the server only
+      VpcId: !Ref ServerVpc
+      SecurityGroupIngress:
+        - Description: NFS from the Minecraft/PufferPanel server
+          IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref ServerSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-efs"
+
+  PufferPanelServersFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      ThroughputMode: elastic
+      FileSystemTags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-servers"
+
+  PufferPanelServersMountTarget:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref PufferPanelServersFileSystem
+      SubnetId: !Ref PublicSubnet
+      SecurityGroups:
+        - !GetAtt EfsSecurityGroup.GroupId
+
+  PufferPanelConfigFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      ThroughputMode: elastic
+      FileSystemTags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-config"
+
+  PufferPanelConfigMountTarget:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref PufferPanelConfigFileSystem
+      SubnetId: !Ref PublicSubnet
+      SecurityGroups:
+        - !GetAtt EfsSecurityGroup.GroupId
+
+Outputs:
+  PublicIp:
+    Value: !Ref ServerEip
+  PufferPanelUrl:
+    Value: !Sub http://${ServerEip}:8080
+  MinecraftAddress:
+    Value: !Sub ${ServerEip}:19132
+  InstanceId:
+    Description: 'The Instance ID of the newly created EC2 instance.'
+    Value: !Ref ServerInstanceAmd

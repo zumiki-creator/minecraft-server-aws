@@ -146,6 +146,32 @@ Resources:
       SubnetId: !Ref PublicSubnet
       RouteTableId: !Ref PublicRouteTable
 
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref ServerVpc
+      CidrBlock: 192.168.160.128/25
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-private"
+
+  # No default route: the private subnet has no internet access
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref ServerVpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-private"
+
+  PrivateSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+
   # ---------- Security ----------
   ServerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -432,7 +458,7 @@ Resources:
     Type: AWS::EFS::MountTarget
     Properties:
       FileSystemId: !Ref PufferPanelServersFileSystem
-      SubnetId: !Ref PublicSubnet
+      SubnetId: !Ref PrivateSubnet
       SecurityGroups:
         - !GetAtt EfsSecurityGroup.GroupId
 
@@ -450,7 +476,7 @@ Resources:
     Type: AWS::EFS::MountTarget
     Properties:
       FileSystemId: !Ref PufferPanelConfigFileSystem
-      SubnetId: !Ref PublicSubnet
+      SubnetId: !Ref PrivateSubnet
       SecurityGroups:
         - !GetAtt EfsSecurityGroup.GroupId
 

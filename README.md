@@ -113,3 +113,7 @@ sudo docker exec -it pufferpanel /pufferpanel/bin/pufferpanel user add
 
 # access to pufferpanel cli
 sudo docker exec -it pufferpanel /bin/sh
+
+# EC2 userdata logs
+sudo cat /var/log/cloud-init-output.log
+

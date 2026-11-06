@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Minecraft server host - Ubuntu on t3a.medium (AMD) running PufferPanel in Docker. Standalone template (no SAM transform, no external user-data file).
+Description: Minecraft server host - Ubuntu on t3a.small (2GB) or t3a.medium (4GB) (AMD) running PufferPanel in Docker. Standalone template (no SAM transform, no external user-data file).
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -13,6 +13,7 @@ Metadata:
       - Label:
           default: Server instance
         Parameters:
+          - Memory
           - UbuntuAmiId
           - KeyName
       - Label:
@@ -28,6 +29,8 @@ Metadata:
         default: Your IP address (CIDR)
       MinecraftUsersCidr:
         default: Players' IP range (CIDR)
+      Memory:
+        default: Memory (RAM)
       UbuntuAmiId:
         default: Ubuntu AMI (SSM parameter)
       KeyName:
@@ -52,6 +55,14 @@ Parameters:
     Type: String
     Description: CIDR allowed to connect to the Minecraft game ports (Bedrock 19132, Java 25565). Use 0.0.0.0/0 for anyone (e.g. 203.0.113.0/24)
     AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+  Memory:
+    Type: String
+    Description: 2GB uses t3a.small, 4GB uses t3a.medium. Changing this replaces the instance
+    Default: 4GB
+    AllowedValues:
+      - 2GB
+      - 4GB
+    ConstraintDescription: Must be 2GB or 4GB
   UbuntuAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Description: SSM parameter resolving to the Ubuntu amd64 AMI (change the version to use a newer release)
@@ -87,6 +98,7 @@ Rules:
 
 Conditions:
   HasKeyName: !Not [!Equals [!Ref KeyName, '']]
+  UseSmallInstance: !Equals [!Ref Memory, '2GB']
 
 Resources:
   # ---------- Network ----------
@@ -244,7 +256,7 @@ Resources:
     Type: AWS::EC2::LaunchTemplate
     Properties:
       LaunchTemplateData:
-        InstanceType: t3a.medium
+        InstanceType: !If [UseSmallInstance, t3a.small, t3a.medium]
         ImageId: !Ref UbuntuAmiId
         KeyName: !If [HasKeyName, !Ref KeyName, !Ref 'AWS::NoValue']
         IamInstanceProfile:

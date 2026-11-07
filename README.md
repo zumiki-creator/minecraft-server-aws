@@ -1,36 +1,48 @@
-# Minecraft on AWS (SAM)
+# Minecraft Server on AWS (CloudFormation)
 
-Launches a `t3a.medium` Ubuntu (amd64) instance from a launch template in its own VPC. The instance has a
-20 GB encrypted gp3 root volume and an IAM instance profile with SSM access. User data installs
-Docker and runs `pufferpanel/pufferpanel:latest` in a container. An Elastic IP is attached. The instance
-is stopped at 00:00 UTC and started at 08:00 UTC every day.
+A single CloudFormation template that launches an Ubuntu EC2 instance running
+[PufferPanel](https://www.pufferpanel.com/) in Docker, so you can host Minecraft (Java and Bedrock) servers
+from a web panel. Server and panel data live on EFS, so they survive instance replacement.
 
-Resources:
-- `ServerVpc`, `PublicSubnet`, `InternetGateway`, `PublicRouteTable`: a `192.168.160.0/24` VPC with one
-  public subnet and a default route to the internet.
-- `ServerLaunchTemplate` (`AWS::EC2::LaunchTemplate`): instance type, AMI, key pair, instance
-  profile, security group, root volume, instance tag `minecraft-pufferpanel-docker`, and user data.
-- `ServerInstanceAmd` (`AWS::EC2::Instance`): references the launch template's latest version.
-- `ServerEip` (`AWS::EC2::EIP`): the public address.
-- `StopEC2Schedule` / `StartEC2Schedule` (`AWS::Scheduler::Schedule`): stop and start the instance daily
-  through `SchedulerExecutionRole`.
+Architecture diagram: [`Documentation/Minecraft Server.drawio`](Documentation/Minecraft%20Server.drawio)
+(open it with [diagrams.net](https://app.diagrams.net)).
 
-Security group:
-- Minecraft ports (19132 Bedrock, 25565 Java; UDP + TCP) are restricted to the `MinecraftUsersCidr` parameter.
-- SSH (22), PufferPanel (8080), SFTP (5657) and ICMP echo are restricted to the `MyIpCidr` parameter.
+## What gets created
 
-Both parameters have no default. Pass them at deploy time:
-- `MyIpCidr`: your public IP in CIDR form (e.g. `203.0.113.10/32`).
-- `MinecraftUsersCidr`: the CIDR of players allowed to join (e.g. `0.0.0.0/0` for anyone).
+| Resource | Purpose |
+| --- | --- |
+| `ServerVpc`, `PublicSubnet`, `PrivateSubnet` | `192.168.160.0/24` VPC with a public `/25` (internet route) and a private `/25` (no internet route, EFS only) |
+| `InternetGateway`, route tables | Internet access for the public subnet |
+| `ServerSecurityGroup` | Minecraft ports, PufferPanel, SFTP, SSH and ping, each restricted to the CIDRs you pass in |
+| `ServerLaunchTemplate` | Instance type, Ubuntu AMI, encrypted 10 GB gp3 root volume, key pair, IAM role, user data |
+| `ServerInstanceAmd` | The EC2 instance, launched from the template's latest version |
+| `ServerEip` | Elastic IP, the stable public address |
+| `PufferPanelServersFileSystem`, `PufferPanelConfigFileSystem` | Encrypted EFS volumes for game server data and PufferPanel config |
+| `StopEC2Schedule`, `StartEC2Schedule` | EventBridge Scheduler jobs that stop (00:00 UTC) and start (08:00 UTC) the instance |
+| `BackupVault`, `DailyBackupPlan`, `DailyBackupSelection` | Daily instance backups at midnight America/New_York, kept 3 days |
 
-## Deployment
+Ports:
+- Minecraft Bedrock 19132 and Java 25565 (UDP and TCP): open to `MinecraftUsersCidr`.
+- SSH 22, PufferPanel web UI 8080, SFTP 5657 and ICMP echo: open only to `MyIpCidr`.
 
-- AWS profile `minecraft`
-- Region: `us-east-1`. The `AwsRegion` parameter defaults to this and must match the `--region` used for deploy; the stack fails if they differ.
-- Stack name: `pufferpanel-on-ec2-docker`
-- Key pair: `minecraft-keypair` (private key saved locally as `minecraft-keypair.pem`, read-only, git-ignored)
+## Parameters
 
-Create the key pair (run once, before deploying):
+| Parameter | Default | Notes |
+| --- | --- | --- |
+| `AwsRegion` | `us-east-1` | Must match the `--region` used for deploy. A stack rule enforces this. |
+| `MyIpCidr` | none (required) | Your public IP in CIDR form, e.g. `203.0.113.10/32` |
+| `MinecraftUsersCidr` | none (required) | Players' CIDR, e.g. `0.0.0.0/0` for anyone |
+| `Memory` | `2GB` | `2GB` uses `t3a.small`, `4GB` uses `t3a.medium`. Changing it replaces the instance. |
+| `UbuntuAmiId` | Ubuntu 26.04 LTS (SSM parameter) | Resolves the amd64 AMI. Change the version in the path to use another release. |
+| `KeyName` | empty | Optional EC2 key pair. Leave empty to use SSM Session Manager only. |
+| `AdminName` | none (required) | First PufferPanel admin username (3–32 characters: letters, digits, `_`, `-`) |
+| `AdminEmail` | none (required) | First PufferPanel admin email |
+| `AdminPassword` | none (required) | 8–64 characters from `A-Za-z0-9!@#%^&*_+=.,:;?-` |
+
+## Prerequisites
+
+- An AWS CLI profile named `minecraft` with permission to create the resources above
+- Optional: an EC2 key pair for SSH. Create one once:
 
 ```sh
 aws ec2 create-key-pair --key-name minecraft-keypair --key-type rsa --key-format pem \
@@ -38,82 +50,69 @@ aws ec2 create-key-pair --key-name minecraft-keypair --key-type rsa --key-format
 chmod 400 minecraft-keypair.pem
 ```
 
-```sh
-sam validate --lint
-sam deploy --profile minecraft --stack-name pufferpanel-on-ec2-docker --region us-east-1 \
-  --resolve-s3 --capabilities CAPABILITY_IAM \
-  --parameter-overrides MyIpCidr=<your-public-ip>/32 MinecraftUsersCidr=<players-cidr>/32
-```
+Pass `KeyName=minecraft-keypair` at deploy time to use it. Keep `*.pem` files out of git (already in `.gitignore`).
 
-Get the public address from the stack's `PublicIp` output. It stays the same unless the stack is deleted and recreated.
+## Deploy
 
-## Container setup
-
-User data runs these commands on first boot:
+Validate the template:
 
 ```sh
-docker volume create pufferpanel-config
-docker volume create pufferpanel-servers
-docker create --name pufferpanel \
-  -p 8080:8080 -p 5657:5657 \
-  -v pufferpanel-config:/etc/pufferpanel \
-  -v pufferpanel-servers:/var/lib/pufferpanel:z \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  --restart=on-failure \
-  pufferpanel/pufferpanel:latest
-docker start pufferpanel
+aws cloudformation validate-template --template-body file://pufferpanel-cloudformation.yaml \
+  --profile minecraft --region us-east-1
 ```
 
-The Docker socket is mounted so the panel can start game server containers.
+Get the address from the stack outputs (`PublicIp`, `PufferPanelUrl`, `InstanceId`):
+
+```sh
+aws cloudformation describe-stacks --stack-name pufferpanel-on-ec2-docker \
+  --profile minecraft --region us-east-1 --query 'Stacks[0].Outputs'
+```
+
+The public address stays the same unless the stack is deleted and recreated. If your public IP changes,
+redeploy with the new `MyIpCidr`.
 
 ## After deploy
 
-No user is created automatically. Connect with SSH and create an admin user inside the container:
+Setup runs in the background on first boot. Allow a few minutes, then open `PufferPanelUrl` and log in with
+the admin account you passed in.
+
+To check progress or connect:
 
 ```sh
-ssh -i keypair ubuntu@<public-ip>
-sudo docker exec -it pufferpanel /pufferpanel/pufferpanel user add
-```
+# SSH (requires KeyName)
+ssh -i minecraft-keypair.pem ubuntu@<public-ip>
 
-Then open the PufferPanel URL. Setup runs in the background after boot, so allow a few minutes.
-Progress: `/var/log/cloud-init-output.log`. Container logs: `sudo docker logs pufferpanel`.
+# Or SSM Session Manager (works without a key pair)
+aws ssm start-session --target <instance-id> --profile minecraft --region us-east-1
 
-SSM also works: `aws ssm start-session --target <instance-id> --profile minecraft --region us-east-1`.
+# Bootstrap log
+sudo cat /var/log/cloud-init-output.log
 
-## Notes
-
-- Default AMI is Ubuntu 26.04 LTS, resolved from an SSM parameter (`UbuntuAmiId`).
-- If your public IP changes, redeploy with the new `MyIpCidr` value.
-- User data runs only on first boot. Changing it creates a new launch template version, and the
-  instance may be replaced, which deletes its root volume and data and changes the Elastic IP.
-- Changing the instance type's architecture or the AMI replaces the instance and its root
-  volume, so data on it is lost. Changing architecture also requires renaming the instance
-  resource, because CloudFormation can't change the type in place on the old architecture.
-- The instance is off between 00:00 and 08:00 UTC by design. Server data persists across stop/start, since only the
-  root volume is tied to the instance lifecycle.
-- Creates its own VPC; it does not use the default VPC.
-
-# Deployment Command
-sam validate --lint --profile minecraft --region us-east-1 2>&1 | tail -5
-sam build
-sam deploy \
---profile minecraft \
---stack-name pufferpanel-on-ec2-docker \
---region us-east-1 \
---resolve-s3 --capabilities CAPABILITY_IAM \
---parameter-overrides MyIpCidr=<yourIP> MinecraftUsersCidr=<ip> or 0.0.0.0/0
-
-#ssh to ec2:
-chmod 400 "minecraft-keypair.pem"
-- check the connect comand on aws console:
-ssh -i "minecraft-keypair.pem" ubuntu@ip
-
-# Add user to pufferpanel
-sudo docker exec -it pufferpanel /pufferpanel/bin/pufferpanel user add
-
-# access to pufferpanel cli
+# PufferPanel container
+sudo docker logs pufferpanel
 sudo docker exec -it pufferpanel /bin/sh
 
-# EC2 userdata logs
-sudo cat /var/log/cloud-init-output.log
-na
+# Add another admin user
+sudo docker exec -it pufferpanel /pufferpanel/bin/pufferpanel user add
+```
+
+## Operating notes
+
+- **Daily stop/start**: the instance is off between 00:00 and 08:00 UTC by design. Both schedules are created
+  in the `DISABLED` state, so enable `StopEC2Schedule` and `StartEC2Schedule` in EventBridge Scheduler if you
+  want the automatic shutdown.
+- **Data persistence**: game servers and PufferPanel config are on EFS, so they persist across stop/start and
+  instance replacement. The EC2 root volume does not hold any server data.
+- **Backups**: `DailyBackupPlan` backs up the EC2 instance (root volume) only. The EFS file systems are not in
+  the backup selection.
+- **Instance replacement**: changing user data, the launch template, `Memory` or the AMI creates a new
+  instance. The root volume is lost, and the Elastic IP and instance ID change. EFS data is kept.
+- **Region**: `AwsRegion` must match the deploy region.
+- **Ubuntu release**: the default AMI is Ubuntu 26.04 LTS. Earlier versions of this README referred to 24.04.
+
+## Repository layout
+
+- `pufferpanel-cloudformation.yaml`: the template (the only deployable artifact)
+- `Documentation/`: architecture diagram (`Minecraft Server.drawio`)
+- `CLAUDE.md`: guidance for Claude Code working in this repo
+- `LICENSE`: project license

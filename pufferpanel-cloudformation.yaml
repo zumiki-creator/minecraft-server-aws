@@ -1,6 +1,46 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Transform: AWS::Serverless-2016-10-31
-Description: Minecraft server host - Ubuntu on t3a.medium (AMD) running PufferPanel in Docker
+Description: Minecraft server host - Ubuntu on t3a.small (2GB) or t3a.medium (4GB) (AMD) running PufferPanel in Docker. Standalone template.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Network access
+        Parameters:
+          - AwsRegion
+          - MyIpCidr
+          - MinecraftUsersCidr
+      - Label:
+          default: Server instance
+        Parameters:
+          - Memory
+          - UbuntuAmiId
+          - KeyName
+      - Label:
+          default: PufferPanel admin account
+        Parameters:
+          - AdminName
+          - AdminEmail
+          - AdminPassword
+    ParameterLabels:
+      AwsRegion:
+        default: AWS region
+      MyIpCidr:
+        default: Your IP address (CIDR)
+      MinecraftUsersCidr:
+        default: Players' IP range (CIDR)
+      Memory:
+        default: Memory (RAM)
+      UbuntuAmiId:
+        default: Ubuntu AMI (SSM parameter)
+      KeyName:
+        default: SSH key pair name
+      AdminName:
+        default: Admin username
+      AdminEmail:
+        default: Admin email
+      AdminPassword:
+        default: Admin password
 
 Parameters:
   AwsRegion:
@@ -15,6 +55,14 @@ Parameters:
     Type: String
     Description: CIDR allowed to connect to the Minecraft game ports (Bedrock 19132, Java 25565). Use 0.0.0.0/0 for anyone (e.g. 203.0.113.0/24)
     AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+  Memory:
+    Type: String
+    Description: 2GB uses t3a.small, 4GB uses t3a.medium. Changing this replaces the instance
+    Default: 2GB
+    AllowedValues:
+      - 2GB
+      - 4GB
+    ConstraintDescription: Must be 2GB or 4GB
   UbuntuAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Description: SSM parameter resolving to the Ubuntu amd64 AMI (change the version to use a newer release)
@@ -22,7 +70,24 @@ Parameters:
   KeyName:
     Type: String
     Description: EC2 key pair name (leave empty to use SSM Session Manager only)
-    Default: minecraft-keypair
+  AdminName:
+    Type: String
+    Description: Username of the first PufferPanel admin user
+    AllowedPattern: '^[A-Za-z0-9_-]{3,32}$'
+    ConstraintDescription: '3-32 characters: letters, digits, underscore or hyphen'
+  AdminEmail:
+    Type: String
+    Description: Email address of the first PufferPanel admin user
+    AllowedPattern: '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
+    ConstraintDescription: Must be a valid email address
+  AdminPassword:
+    Type: String
+    NoEcho: true
+    Description: Password of the first PufferPanel admin user (8-64 characters, no spaces or quotes or $ ` \)
+    MinLength: 8
+    MaxLength: 64
+    AllowedPattern: '^[A-Za-z0-9!@#%^&*_+=.,:;?-]{8,64}$'
+    ConstraintDescription: 8-64 characters; letters, digits and !@#%^&*_+=.,:;?- only
 
 Rules:
   RegionMatchesStackRegion:
@@ -32,8 +97,10 @@ Rules:
 
 Conditions:
   HasKeyName: !Not [!Equals [!Ref KeyName, '']]
+  UseSmallInstance: !Equals [!Ref Memory, '2GB']
 
 Resources:
+  # ---------- Network ----------
   ServerVpc:
     Type: AWS::EC2::VPC
     Properties:
@@ -42,14 +109,14 @@ Resources:
       EnableDnsHostnames: true
       Tags:
         - Key: Name
-          Value: minecraft-pufferpanel-vpc
+          Value: !Sub "${AWS::StackName}-vpc"
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
     Properties:
       Tags:
         - Key: Name
-          Value: minecraft-pufferpanel-igw
+          Value: !Sub "${AWS::StackName}-igw"
 
   InternetGatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -66,7 +133,7 @@ Resources:
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: minecraft-pufferpanel-public
+          Value: !Sub "${AWS::StackName}-public"
 
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
@@ -74,7 +141,7 @@ Resources:
       VpcId: !Ref ServerVpc
       Tags:
         - Key: Name
-          Value: minecraft-pufferpanel-public
+          Value: !Sub "${AWS::StackName}-public"
 
   PublicDefaultRoute:
     Type: AWS::EC2::Route
@@ -90,6 +157,33 @@ Resources:
       SubnetId: !Ref PublicSubnet
       RouteTableId: !Ref PublicRouteTable
 
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref ServerVpc
+      CidrBlock: 192.168.160.128/25
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-private"
+
+  # No default route: the private subnet has no internet access
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref ServerVpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-private"
+
+  PrivateSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+
+  # ---------- Security ----------
   ServerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -156,11 +250,12 @@ Resources:
       Roles:
         - !Ref InstanceRole
 
+  # ---------- Compute ----------
   ServerLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
       LaunchTemplateData:
-        InstanceType: t3a.medium
+        InstanceType: !If [UseSmallInstance, t3a.small, t3a.medium]
         ImageId: !Ref UbuntuAmiId
         KeyName: !If [HasKeyName, !Ref KeyName, !Ref 'AWS::NoValue']
         IamInstanceProfile:
@@ -170,7 +265,7 @@ Resources:
         BlockDeviceMappings:
           - DeviceName: /dev/sda1
             Ebs:
-              VolumeSize: 20
+              VolumeSize: 10
               VolumeType: gp3
               DeleteOnTermination: true
               Encrypted: true
@@ -178,12 +273,56 @@ Resources:
           - ResourceType: instance
             Tags:
               - Key: Name
-                Value: minecraft-pufferpanel-docker
+                Value: !Sub "${AWS::StackName}-PufferPanel-docker"
         UserData:
-          Fn::Transform:
-            Name: AWS::Include
-            Parameters:
-              Location: user-data.yaml
+          Fn::Base64:
+            Fn::Sub: |
+              #!/bin/bash -e
+              # No -x: it would write the generated password to cloud-init logs.
+              set -euo pipefail
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -y
+              apt-get install -y docker.io nfs-common
+              systemctl enable --now docker
+
+              # Mount the pufferpanel-servers EFS file system (server data survives instance replacement)
+              mkdir -p /mnt/pufferpanel-servers
+              grep -q ' /mnt/pufferpanel-servers ' /etc/fstab || \
+                echo '${PufferPanelServersFileSystem}.efs.${AWS::Region}.amazonaws.com:/ /mnt/pufferpanel-servers nfs4 nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport,_netdev 0 0' >> /etc/fstab
+              # The mount target can take a moment to become reachable after the stack is created
+              for i in $(seq 1 60); do
+                mount /mnt/pufferpanel-servers && break
+                sleep 10
+              done
+              mountpoint -q /mnt/pufferpanel-servers
+
+              # Mount the pufferpanel-config EFS file system (PufferPanel config survives instance replacement)
+              mkdir -p /mnt/pufferpanel-config
+              grep -q ' /mnt/pufferpanel-config ' /etc/fstab || \
+                echo '${PufferPanelConfigFileSystem}.efs.${AWS::Region}.amazonaws.com:/ /mnt/pufferpanel-config nfs4 nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport,_netdev 0 0' >> /etc/fstab
+              for i in $(seq 1 60); do
+                mount /mnt/pufferpanel-config && break
+                sleep 10
+              done
+              mountpoint -q /mnt/pufferpanel-config
+
+              docker create --name pufferpanel \
+                -p 8080:8080 -p 5657:5657 \
+                -v /mnt/pufferpanel-config:/etc/pufferpanel \
+                -v /mnt/pufferpanel-servers:/var/lib/pufferpanel:z \
+                -v /var/run/docker.sock:/var/run/docker.sock \
+                --restart=on-failure \
+                pufferpanel/pufferpanel:latest
+
+              docker image ls
+
+              docker container ls -a
+
+              docker start pufferpanel
+
+              sleep 5
+
+              docker exec -i pufferpanel /pufferpanel/bin/pufferpanel user add --name "${AdminName}" --email "${AdminEmail}" --password "${AdminPassword}" --admin
 
   ServerInstanceAmd:
     Type: AWS::EC2::Instance
@@ -201,12 +340,7 @@ Resources:
     Properties:
       InstanceId: !Ref ServerInstanceAmd
 
-
-      ######################################
-
-      
-
-  # 2. IAM Role allowing EventBridge Scheduler to start/stop the instance
+  # ---------- Scheduler (start/stop instance daily) ----------
   SchedulerExecutionRole:
     Type: 'AWS::IAM::Role'
     Properties:
@@ -228,15 +362,15 @@ Resources:
                   - 'ec2:StopInstances'
                 Resource: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${ServerInstanceAmd}'
 
-  # 3. EventBridge Schedule to STOP the instance at Midnight UTC daily
+  # Stops the EC2 instance daily at 00:00 UTC
   StopEC2Schedule:
     Type: 'AWS::Scheduler::Schedule'
     Properties:
-      Name: StopEC2
+      Name: !Sub "${AWS::StackName}-StopEC2"
       Description: 'Stops the EC2 instance daily at midnight UTC.'
       FlexibleTimeWindow:
         Mode: 'OFF'
-      ScheduleExpression: 'cron(0 0 * * ? *)' # Runs at 00:00 UTC every day
+      ScheduleExpression: 'cron(0 0 * * ? *)'
       ScheduleExpressionTimezone: 'UTC'
       State: DISABLED
       Target:
@@ -244,15 +378,15 @@ Resources:
         RoleArn: !GetAtt SchedulerExecutionRole.Arn
         Input: !Sub '{"InstanceIds": ["${ServerInstanceAmd}"]}'
 
-  # 4. EventBridge Schedule to START the instance at 8:00 AM UTC daily
+  # Starts the EC2 instance daily at 08:00 UTC
   StartEC2Schedule:
     Type: 'AWS::Scheduler::Schedule'
     Properties:
-      Name: StartEC2
+      Name: !Sub "${AWS::StackName}-StartEC2"
       Description: 'Starts the EC2 instance daily at 8:00 AM UTC.'
       FlexibleTimeWindow:
         Mode: 'OFF'
-      ScheduleExpression: 'cron(0 8 * * ? *)' # Runs at 08:00 UTC every day
+      ScheduleExpression: 'cron(0 8 * * ? *)'
       ScheduleExpressionTimezone: 'UTC'
       State: DISABLED
       Target:
@@ -260,13 +394,11 @@ Resources:
         RoleArn: !GetAtt SchedulerExecutionRole.Arn
         Input: !Sub '{"InstanceIds": ["${ServerInstanceAmd}"]}'
 
-      #####################################
-
-  # 5. AWS Backup: full daily backup (AMI + EBS snapshots) of the instance at midnight Miami time
+  # ---------- AWS Backup (daily, 3-day retention) ----------
   BackupVault:
     Type: 'AWS::Backup::BackupVault'
     Properties:
-      BackupVaultName: minecraft-pufferpanel-vault
+      BackupVaultName: !Sub "${AWS::StackName}-vault"
 
   BackupServiceRole:
     Type: 'AWS::IAM::Role'
@@ -286,32 +418,32 @@ Resources:
     Type: 'AWS::Backup::BackupPlan'
     Properties:
       BackupPlan:
-        BackupPlanName: minecraft-pufferpanel-daily
+        BackupPlanName: !Sub "${AWS::StackName}-daily"
         BackupPlanRule:
           - RuleName: daily-midnight-miami
             TargetBackupVault: !Ref BackupVault
-            ScheduleExpression: 'cron(0 0 * * ? *)' # Midnight every day
-            ScheduleExpressionTimezone: 'America/New_York' # Miami, FL is on Eastern time
+            ScheduleExpression: 'cron(0 0 * * ? *)'
+            ScheduleExpressionTimezone: 'America/New_York'
             StartWindowMinutes: 60
             CompletionWindowMinutes: 180
             Lifecycle:
-              DeleteAfterDays: 3 # Keeps roughly the last 3 daily backups; older ones are deleted
+              DeleteAfterDays: 3
 
   DailyBackupSelection:
     Type: 'AWS::Backup::BackupSelection'
     Properties:
       BackupPlanId: !Ref DailyBackupPlan
       BackupSelection:
-        SelectionName: minecraft-pufferpanel-instance
+        SelectionName: !Sub "${AWS::StackName}-instance"
         IamRoleArn: !GetAtt BackupServiceRole.Arn
         Resources:
           - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${ServerInstanceAmd}'
 
-  # 6. EFS file system for PufferPanel server data, mounted from the same subnet as the instance
+  # ---------- EFS (server data and config) ----------
   EfsSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: NFS access to the pufferpanel-servers EFS from the server only
+      GroupDescription: NFS access to the EFS file systems from the server only
       VpcId: !Ref ServerVpc
       SecurityGroupIngress:
         - Description: NFS from the Minecraft/PufferPanel server
@@ -321,7 +453,7 @@ Resources:
           SourceSecurityGroupId: !Ref ServerSecurityGroup
       Tags:
         - Key: Name
-          Value: minecraft-pufferpanel-efs
+          Value: !Sub "${AWS::StackName}-efs"
 
   PufferPanelServersFileSystem:
     Type: AWS::EFS::FileSystem
@@ -331,13 +463,13 @@ Resources:
       ThroughputMode: elastic
       FileSystemTags:
         - Key: Name
-          Value: pufferpanel-servers
+          Value: !Sub "${AWS::StackName}-pufferpanel-servers"
 
   PufferPanelServersMountTarget:
     Type: AWS::EFS::MountTarget
     Properties:
       FileSystemId: !Ref PufferPanelServersFileSystem
-      SubnetId: !Ref PublicSubnet
+      SubnetId: !Ref PrivateSubnet
       SecurityGroups:
         - !GetAtt EfsSecurityGroup.GroupId
 
@@ -349,13 +481,13 @@ Resources:
       ThroughputMode: elastic
       FileSystemTags:
         - Key: Name
-          Value: pufferpanel-config
+          Value: !Sub "${AWS::StackName}-pufferpanel-config"
 
   PufferPanelConfigMountTarget:
     Type: AWS::EFS::MountTarget
     Properties:
       FileSystemId: !Ref PufferPanelConfigFileSystem
-      SubnetId: !Ref PublicSubnet
+      SubnetId: !Ref PrivateSubnet
       SecurityGroups:
         - !GetAtt EfsSecurityGroup.GroupId
 
@@ -364,8 +496,6 @@ Outputs:
     Value: !Ref ServerEip
   PufferPanelUrl:
     Value: !Sub http://${ServerEip}:8080
-  MinecraftAddress:
-    Value: !Sub ${ServerEip}:19132
   InstanceId:
     Description: 'The Instance ID of the newly created EC2 instance.'
     Value: !Ref ServerInstanceAmd

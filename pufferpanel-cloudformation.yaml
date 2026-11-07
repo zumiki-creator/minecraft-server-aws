@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Minecraft server host - Ubuntu on t3a.small (2GB) or t3a.medium (4GB) (AMD) running PufferPanel in Docker. Standalone template (no SAM transform, no external user-data file).
+Description: Minecraft server host - Ubuntu on t3a.small (2GB) or t3a.medium (4GB) (AMD) running PufferPanel in Docker. Standalone template.
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -58,7 +58,7 @@ Parameters:
   Memory:
     Type: String
     Description: 2GB uses t3a.small, 4GB uses t3a.medium. Changing this replaces the instance
-    Default: 4GB
+    Default: 2GB
     AllowedValues:
       - 2GB
       - 4GB
@@ -70,7 +70,6 @@ Parameters:
   KeyName:
     Type: String
     Description: EC2 key pair name (leave empty to use SSM Session Manager only)
-    Default: minecraft-keypair
   AdminName:
     Type: String
     Description: Username of the first PufferPanel admin user
@@ -274,7 +273,7 @@ Resources:
           - ResourceType: instance
             Tags:
               - Key: Name
-                Value: !Sub "${AWS::StackName}-docker"
+                Value: !Sub "${AWS::StackName}-PufferPanel-docker"
         UserData:
           Fn::Base64:
             Fn::Sub: |
@@ -497,8 +496,6 @@ Outputs:
     Value: !Ref ServerEip
   PufferPanelUrl:
     Value: !Sub http://${ServerEip}:8080
-  MinecraftAddress:
-    Value: !Sub ${ServerEip}:19132
   InstanceId:
     Description: 'The Instance ID of the newly created EC2 instance.'
     Value: !Ref ServerInstanceAmd

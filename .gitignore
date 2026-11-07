@@ -1,4 +1,3 @@
 # Private SSH keys: never commit
-minecraft-keypair.pem
 keypair
 *.pem

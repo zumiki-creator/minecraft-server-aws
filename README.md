@@ -35,9 +35,6 @@ Ports:
 | `Memory` | `2GB` | `2GB` uses `t3a.small`, `4GB` uses `t3a.medium`. Changing it replaces the instance. |
 | `UbuntuAmiId` | Ubuntu 26.04 LTS (SSM parameter) | Resolves the amd64 AMI. Change the version in the path to use another release. |
 | `KeyName` | empty | Optional EC2 key pair. Leave empty to use SSM Session Manager only. |
-| `AdminName` | none (required) | First PufferPanel admin username (3–32 characters: letters, digits, `_`, `-`) |
-| `AdminEmail` | none (required) | First PufferPanel admin email |
-| `AdminPassword` | none (required) | 8–64 characters from `A-Za-z0-9!@#%^&*_+=.,:;?-` |
 
 ## Prerequisites
 
@@ -73,8 +70,8 @@ redeploy with the new `MyIpCidr`.
 
 ## After deploy
 
-Setup runs in the background on first boot. Allow a few minutes, then open `PufferPanelUrl` and log in with
-the admin account you passed in.
+Setup runs in the background on first boot. Allow a few minutes, then open `PufferPanelUrl`. No admin account
+is created by the stack, so create the first user on the instance (see below) before logging in.
 
 To check progress or connect:
 
@@ -92,8 +89,8 @@ sudo cat /var/log/cloud-init-output.log
 sudo docker logs pufferpanel
 sudo docker exec -it pufferpanel /bin/sh
 
-# Add another admin user
-sudo docker exec -it pufferpanel /pufferpanel/bin/pufferpanel user add
+# Create a PufferPanel admin user (the stack no longer creates one)
+sudo docker exec -it pufferpanel /pufferpanel/bin/pufferpanel user add --name <name> --email <email> --password <password> --admin
 ```
 
 ## Operating notes

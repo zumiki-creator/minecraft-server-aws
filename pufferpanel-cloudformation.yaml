@@ -16,12 +16,6 @@ Metadata:
           - Memory
           - UbuntuAmiId
           - KeyName
-      - Label:
-          default: PufferPanel admin account
-        Parameters:
-          - AdminName
-          - AdminEmail
-          - AdminPassword
     ParameterLabels:
       AwsRegion:
         default: AWS region
@@ -35,12 +29,6 @@ Metadata:
         default: Ubuntu AMI (SSM parameter)
       KeyName:
         default: SSH key pair name
-      AdminName:
-        default: Admin username
-      AdminEmail:
-        default: Admin email
-      AdminPassword:
-        default: Admin password
 
 Parameters:
   AwsRegion:
@@ -70,24 +58,6 @@ Parameters:
   KeyName:
     Type: String
     Description: EC2 key pair name (leave empty to use SSM Session Manager only)
-  AdminName:
-    Type: String
-    Description: Username of the first PufferPanel admin user
-    AllowedPattern: '^[A-Za-z0-9_-]{3,32}$'
-    ConstraintDescription: '3-32 characters: letters, digits, underscore or hyphen'
-  AdminEmail:
-    Type: String
-    Description: Email address of the first PufferPanel admin user
-    AllowedPattern: '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
-    ConstraintDescription: Must be a valid email address
-  AdminPassword:
-    Type: String
-    NoEcho: true
-    Description: Password of the first PufferPanel admin user (8-64 characters, no spaces or quotes or $ ` \)
-    MinLength: 8
-    MaxLength: 64
-    AllowedPattern: '^[A-Za-z0-9!@#%^&*_+=.,:;?-]{8,64}$'
-    ConstraintDescription: 8-64 characters; letters, digits and !@#%^&*_+=.,:;?- only
 
 Rules:
   RegionMatchesStackRegion:
@@ -277,8 +247,7 @@ Resources:
         UserData:
           Fn::Base64:
             Fn::Sub: |
-              #!/bin/bash -e
-              # No -x: it would write the generated password to cloud-init logs.
+              #!/bin/bash -xe
               set -euo pipefail
               export DEBIAN_FRONTEND=noninteractive
               apt-get update -y
@@ -319,10 +288,6 @@ Resources:
               docker container ls -a
 
               docker start pufferpanel
-
-              sleep 5
-
-              docker exec -i pufferpanel /pufferpanel/bin/pufferpanel user add --name "${AdminName}" --email "${AdminEmail}" --password "${AdminPassword}" --admin
 
   ServerInstanceAmd:
     Type: AWS::EC2::Instance
